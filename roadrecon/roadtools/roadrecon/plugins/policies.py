@@ -251,7 +251,7 @@ class AccessPoliciesPlugin():
                 break
             objects = self._translate_locations(clist)
             ot += 'Locations: '
-            ot += ', '.join([escape(uobj) for uobj in objects])
+            ot += '<p> '.join([escape(uobj) for uobj in objects])
         return ot
 
     def _translate_locations(self, locs):
@@ -261,9 +261,14 @@ class AccessPoliciesPlugin():
         for policy in policies:
             for pdetail in policy.policyDetail:
                 detaildata = json.loads(pdetail)
-
-                if detaildata['KnownNetworkPolicies']['NetworkId'] in locs:
-                    out.append(detaildata['KnownNetworkPolicies']['NetworkName'])
+                # Debug KnownNetworkPolicies parsing issue
+                try:
+                    if detaildata['KnownNetworkPolicies']['NetworkId'] in locs:
+                        out.append(detaildata['KnownNetworkPolicies']['NetworkName'] + '[' + ' '.join(detaildata['KnownNetworkPolicies']['CidrIpRanges']) + ']')
+                except:
+                    print("Debug")
+                    print(detaildata)
+                    continue
         return out
 
     def _parse_who(self, cond):
