@@ -26,6 +26,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 '''
 import json
+import sys
 import os
 import codecs
 import argparse
@@ -250,8 +251,8 @@ class AccessPoliciesPlugin():
                 ot += 'All locations'
                 break
             objects = self._translate_locations(clist)
-            ot += 'Locations: '
-            ot += '<p> '.join([escape(uobj) for uobj in objects])
+            ot += '<p>Locations (Name|Categories|CountryCodes|CidrIps):<li> '
+            ot += '<li> '.join([escape(uobj) for uobj in objects])
         return ot
 
     def _translate_locations(self, locs):
@@ -262,11 +263,34 @@ class AccessPoliciesPlugin():
             for pdetail in policy.policyDetail:
                 detaildata = json.loads(pdetail)
                 # Debug KnownNetworkPolicies parsing issue
+                # Structure of KnownNetworkPolicies, keys optional: 
+                # - NetworkName
+                # - NetworkId
+                # - CidrIpRanges (list)
+                # - Categories (list)
+                # - CountryIsoCodes
+                
                 try:
-                    if detaildata['KnownNetworkPolicies']['NetworkId'] in locs:
-                        out.append(detaildata['KnownNetworkPolicies']['NetworkName'] + '[' + ' '.join(detaildata['KnownNetworkPolicies']['CidrIpRanges']) + ']')
+                    if detaildata['KnownNetworkPolicies']['NetworkId'] in locs:    # Entry exists
+                        # build the string and pass to output function
+                        known_network_policy = detaildata['KnownNetworkPolicies']
+                        network_name = known_network_policy.get('NetworkName', 'Un-named')
+                        ip_ranges = ' '.join(known_network_policy.get('CidrIpRanges', []))
+                        categories = ' '.join(known_network_policy.get('Categories', []))
+                        try:
+                            country = known_network_policy.get('CountryIsoCodes', [])
+                            if country != None:     # Can return null or array
+                                country = ' '.join(country)
+                            else: 
+                                country = ''
+                        except:
+                            print('Country Debug', sys.exc_info()[0])
+                            print(detaildata)
+                            continue
+                        out.append('|'.join([network_name,categories,country,ip_ranges]))
+                                
                 except:
-                    print("Debug")
+                    print("Debug", sys.exc_info()[0])
                     print(detaildata)
                     continue
         return out
