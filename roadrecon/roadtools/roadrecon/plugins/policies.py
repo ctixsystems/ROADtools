@@ -358,10 +358,46 @@ class AccessPoliciesPlugin():
         ucond = cond['SessionControls']
         return ', '.join(ucond)
 
+    def _parse_network_summary(self):
+        # Present a summary of trusted network locations the form:
+        #   - Trusted  | Name    | CidrIps
+        #              | Name .. | CidrIps...
+        
+        policies = self.session.query(Policy).filter(Policy.policyType == 6).all()
+        out = [] # array to hold the collection of network locations by trusted category (dict)
+                 # [{"NetName", [CidrIps]}, {"NetName2": [CidrIps2]}]
+
+        # Not sure if there can be multiple
+        for policy in policies:
+            for pdetail in policy.policyDetail:
+                detaildata = json.loads(pdetail)
+                try:
+                    known_network_policy = detaildata['KnownNetworkPolicies']
+                except:
+                    continue
+                categories = ' '.join(known_network_policy.get('Categories', []))
+                network_name = known_network_policy.get('NetworkName', 'Un-named')
+                ip_ranges = ' '.join(known_network_policy.get('CidrIpRanges', []))
+                if categories == 'trusted':
+                    val = {}
+                    val[network_name] = ip_ranges
+                    out.append(val)
+        return out 
+
+
     def main(self, should_print=False):
         pp = pprint.PrettyPrinter(indent=4)
         ol = []
         html = '<table>'
+        # Summarise trusted locations
+        tl_out = self._parse_network_summary()
+        tl_table = '<thead><tr><td>Trusted Locations</td></tr></thead><tbody>'
+        for tl_elem in tl_out:
+            for k,v in tl_elem.items():
+                tl_table += '<tr><td>{0}</td><td>{1}</td></tr>'.format(k,v)
+        tl_table += '</tbody></table><table>'
+        html += tl_table
+        
         for policy in self.session.query(Policy).filter(Policy.policyType == 18):
             out = {}
             out['name'] = escape(policy.displayName)
@@ -411,6 +447,10 @@ class AccessPoliciesPlugin():
             table += '</tbody>'
             html += table
         self.write_html(self.file, html)
+        print('#'*20)
+        print('Trusted locations: ')
+        print(json.dumps(self._parse_network_summary(), indent=4))
+        print('#'*20)
         print('Results written to {0}'.format(self.file))
 
 def add_args(parser):
