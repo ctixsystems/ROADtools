@@ -25,6 +25,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 '''
+import base64
+import zlib
 import json
 import sys
 import os
@@ -260,40 +262,75 @@ class AccessPoliciesPlugin():
         out = []
         # Not sure if there can be multiple
         for policy in policies:
+        #
+        # Seems to have been a change in format between version 0 and version 1 policy declarations
+        # Need to add version specific processing logic
+        #
+            # Version 1 policies have the location recorded as policyIdentifier in the policy object
+            if policy.policyIdentifier in locs:
+               out.append(self._process_conditional_access_detail(policy))
+
+            # Version 0 process
             for pdetail in policy.policyDetail:
                 detaildata = json.loads(pdetail)
-                # Debug KnownNetworkPolicies parsing issue
-                # Structure of KnownNetworkPolicies, keys optional: 
+                # Structure of KnownNetworkPolicies, keys optional:
                 # - NetworkName
                 # - NetworkId
                 # - CidrIpRanges (list)
                 # - Categories (list)
                 # - CountryIsoCodes
-                
+
                 try:
                     if detaildata['KnownNetworkPolicies']['NetworkId'] in locs:    # Entry exists
                         # build the string and pass to output function
+                        # TODO make this a helper function
                         known_network_policy = detaildata['KnownNetworkPolicies']
                         network_name = known_network_policy.get('NetworkName', 'Un-named')
-                        ip_ranges = ' '.join(known_network_policy.get('CidrIpRanges', []))
+                        ip_ranges = ','.join(known_network_policy.get('CidrIpRanges', []))
                         categories = ' '.join(known_network_policy.get('Categories', []))
                         try:
                             country = known_network_policy.get('CountryIsoCodes', [])
                             if country != None:     # Can return null or array
                                 country = ' '.join(country)
-                            else: 
+                            else:
                                 country = ''
                         except:
                             print('Country Debug', sys.exc_info()[0])
                             print(detaildata)
                             continue
                         out.append('|'.join([network_name,categories,country,ip_ranges]))
-                                
+
                 except:
-                    print("Debug", sys.exc_info()[0])
-                    print(detaildata)
                     continue
+
         return out
+
+    def _process_conditional_access_detail(self, policy):
+        # Extract relevant attributes from conidtional access policy detail array
+        # Return a string containing network_name,categories,country,ip_ranges
+        pdetail = policy.policyDetail
+        name = policy.displayName
+
+        for pdentry in pdetail:
+            detaildata = json.loads(pdentry)
+            categories = ' '.join(detaildata.get('Categories', []))
+            try:
+                country = detaildata.get('CountryIsoCodes', [])
+                if country != None:     # Can return null or array
+                    country = ' '.join(country)
+                else:
+                    country = ''
+            except:
+                print('Country Debug', sys.exc_info()[0])
+                print(detaildata)
+                continue
+
+            if 'CompressedCidrIpRanges' in detaildata:
+                ip_ranges = self._decode_base64_and_inflate(detaildata['CompressedCidrIpRanges'])
+            else:
+                ip_ranges = ''
+
+        return '|'.join([name,categories,country,ip_ranges])
 
     def _parse_who(self, cond):
         ucond = cond['Users']
@@ -360,30 +397,53 @@ class AccessPoliciesPlugin():
 
     def _parse_network_summary(self):
         # Present a summary of trusted network locations the form:
-        #   - Trusted  | Name    | CidrIps
-        #              | Name .. | CidrIps...
-        
-        policies = self.session.query(Policy).filter(Policy.policyType == 6).all()
+        #   | Name    | CidrIps
+        #   | Name .. | CidrIps...
+
+        policies_type_6 = self.session.query(Policy).filter(Policy.policyType == 6).all()
         out = [] # array to hold the collection of network locations by trusted category (dict)
                  # [{"NetName", [CidrIps]}, {"NetName2": [CidrIps2]}]
 
+        # Two options for processing these:
+        #   - Version 0 / null uses the KnownNetworkPolicies structure
+        #       - NetworkName, Categories, CidrIpRanges
+        #   - Version 1 uses
+        #       - Policy policyName
+        #       - and the Categories and CompressedCidrIpRanges structures from the policyDetail
+
+        # Version 0 / null processing
         # Not sure if there can be multiple
-        for policy in policies:
+        for policy in policies_type_6:
             for pdetail in policy.policyDetail:
                 detaildata = json.loads(pdetail)
-                try:
-                    known_network_policy = detaildata['KnownNetworkPolicies']
-                except:
-                    continue
-                categories = ' '.join(known_network_policy.get('Categories', []))
-                network_name = known_network_policy.get('NetworkName', 'Un-named')
-                ip_ranges = ' '.join(known_network_policy.get('CidrIpRanges', []))
-                if categories == 'trusted':
+                # If this is a version 0 / null policy process the KnownNetworkPolicies structure
+                known_network_policy = detaildata.get('KnownNetworkPolicies', None)
+                if known_network_policy != None:    # We have a record to process
+                    categories = ' '.join(known_network_policy.get('Categories', []))
+                    if categories != 'trusted':     # Not an entry in the trusted networks so no need to continue
+                        continue
+                    network_name = known_network_policy.get('NetworkName', 'Un-named')
+                    ip_ranges = ','.join(known_network_policy.get('CidrIpRanges', []))
                     val = {}
                     val[network_name] = ip_ranges
                     out.append(val)
-        return out 
 
+                else:                               # Possible Version1 record
+                    network_name = policy.displayName
+                    categories = ' '.join(detaildata.get('Categories', []))
+                    if categories != 'trusted':     # Not an entry in the trusted networks so no need to continue
+                        continue
+                    ip_ranges =  self._decode_base64_and_inflate (detaildata.get('CompressedCidrIpRanges'))
+                    val = {}
+                    val[network_name] = ip_ranges
+                    out.append(val)
+
+        return out
+
+    def _decode_base64_and_inflate ( self, b64string ):
+        # Helper function to process CompressedCidrIpRanges
+        decoded_data = base64.b64decode( b64string )
+        return zlib.decompress( decoded_data, -15 ).decode()
 
     def main(self, should_print=False):
         pp = pprint.PrettyPrinter(indent=4)
@@ -397,7 +457,7 @@ class AccessPoliciesPlugin():
                 tl_table += '<tr><td>{0}</td><td>{1}</td></tr>'.format(k,v)
         tl_table += '</tbody></table><table>'
         html += tl_table
-        
+
         for policy in self.session.query(Policy).filter(Policy.policyType == 18):
             out = {}
             out['name'] = escape(policy.displayName)
